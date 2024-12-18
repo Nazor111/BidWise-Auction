@@ -6,6 +6,11 @@
 (define-constant ERR-BID-TOO-LOW (err u103))
 (define-constant ERR-ALREADY-CLAIMED (err u104))
 (define-constant ERR-RESERVE-NOT-MET (err u105))
+(define-constant ERR-NO-BID-TO-REFUND (err u106))
+(define-constant ERR-ALREADY-REFUNDED (err u107))
+(define-constant ERR-AUCTION-ACTIVE (err u108))
+(define-constant ERR-TRANSFER-FAILED (err u109))
+(define-constant ERR-INVALID-AUCTION (err u110))
 
 ;; Data Maps
 (define-map auctions
@@ -19,13 +24,17 @@
         highest-bid: uint,
         highest-bidder: (optional principal),
         is-nft: bool,
-        claimed: bool
+        claimed: bool,
+        auto-closed: bool
     }
 )
 
 (define-map bids
     { auction-id: uint, bidder: principal }
-    { bid-amount: uint }
+    { 
+        bid-amount: uint,
+        refunded: bool
+    }
 )
 
 ;; Storage
@@ -68,7 +77,8 @@
                 highest-bid: u0,
                 highest-bidder: none,
                 is-nft: is-nft,
-                claimed: false
+                claimed: false,
+                auto-closed: false
             }
         )
         
@@ -83,6 +93,9 @@
         (current-block block-height)
         (current-highest-bid (get highest-bid auction))
     )
+        ;; Check if auction needs auto-closure
+        (try! (check-and-auto-close auction-id))
+        
         ;; Check if auction is active
         (asserts! (>= current-block (get start-block auction)) ERR-NOT-AUTHORIZED)
         (asserts! (< current-block (get end-block auction)) ERR-AUCTION-ENDED)
@@ -99,10 +112,13 @@
             })
         )
         
-        ;; Record bid
+        ;; Record bid with refund status
         (map-set bids
             { auction-id: auction-id, bidder: tx-sender }
-            { bid-amount: bid-amount }
+            { 
+                bid-amount: bid-amount,
+                refunded: false
+            }
         )
         
         (ok true)
@@ -116,6 +132,7 @@
         ;; Check if auction can be ended
         (asserts! (is-auction-ended auction-id) ERR-AUCTION-NOT-ENDED)
         (asserts! (not (get claimed auction)) ERR-ALREADY-CLAIMED)
+        (asserts! (not (get auto-closed auction)) ERR-ALREADY-CLAIMED)
         
         ;; Check if reserve price was met
         (asserts! (>= (get highest-bid auction) (get reserve-price auction)) ERR-RESERVE-NOT-MET)
@@ -123,22 +140,83 @@
         ;; Mark auction as claimed
         (map-set auctions
             { auction-id: auction-id }
-            (merge auction { claimed: true })
+            (merge auction { 
+                claimed: true,
+                auto-closed: true
+            })
         )
         
         ;; Transfer asset and payment
-        ;; Note: Actual token transfer implementation would go here
-        ;; This would vary based on whether it's an NFT or fungible token
-        
-        (ok true)
+        (match (transfer-asset auction-id)
+            success (ok true)
+            error (err error)
+        )
     )
 )
 
-;; Helper Functions
+(define-public (claim-refund (auction-id uint))
+    (let (
+        (auction (unwrap! (get-auction auction-id) ERR-NOT-AUTHORIZED))
+        (bid (unwrap! (get-bid auction-id tx-sender) ERR-NO-BID-TO-REFUND))
+    )
+        ;; Verify auction is ended or auto-closed
+        (asserts! (or (is-auction-ended auction-id) (get auto-closed auction)) ERR-AUCTION-ACTIVE)
+        
+        ;; Check if bid was not already refunded
+        (asserts! (not (get refunded bid)) ERR-ALREADY-REFUNDED)
+        
+        ;; Check if bidder is not the winner
+        (asserts! (not (is-eq (some tx-sender) (get highest-bidder auction))) ERR-NOT-AUTHORIZED)
+        
+        ;; Mark bid as refunded
+        (map-set bids
+            { auction-id: auction-id, bidder: tx-sender }
+            (merge bid { refunded: true })
+        )
+        
+        ;; Process refund
+        (match (process-refund tx-sender (get bid-amount bid))
+            success (ok true)
+            error (err error)
+        )
+    )
+)
+
+;; Private Functions
+(define-private (check-and-auto-close (auction-id uint))
+    (let (
+        (auction (unwrap! (get-auction auction-id) ERR-NOT-AUTHORIZED))
+    )
+        (if (and 
+            (is-auction-ended auction-id)
+            (not (get auto-closed auction))
+            )
+            (begin
+                (map-set auctions
+                    { auction-id: auction-id }
+                    (merge auction { auto-closed: true })
+                )
+                (ok true)
+            )
+            (ok true)
+        )
+    )
+)
+
 (define-private (transfer-asset (auction-id uint))
-    ;; Implementation for asset transfer
-    ;; This would handle both NFT and fungible token transfers
-    (ok true)
+    (let (
+        (auction (unwrap! (get-auction auction-id) ERR-INVALID-AUCTION))
+        (winner (unwrap! (get highest-bidder auction) ERR-INVALID-AUCTION))
+    )
+        (ok u1) ;; Placeholder for actual token transfer implementation
+    )
+)
+
+(define-private (process-refund (bidder principal) (amount uint))
+    (if (> amount u0)
+        (ok u1) ;; Placeholder for actual refund implementation
+        ERR-TRANSFER-FAILED
+    )
 )
 
 ;; Error Handling Utilities
