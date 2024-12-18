@@ -11,6 +11,8 @@
 (define-constant ERR-AUCTION-ACTIVE (err u108))
 (define-constant ERR-TRANSFER-FAILED (err u109))
 (define-constant ERR-INVALID-AUCTION (err u110))
+(define-constant ERR-INVALID-TOKEN (err u111))
+(define-constant ERR-INVALID-RESERVE (err u112))
 
 ;; Data Maps
 (define-map auctions
@@ -39,6 +41,8 @@
 
 ;; Storage
 (define-data-var last-auction-id uint u0)
+(define-data-var minimum-reserve uint u1)
+(define-data-var maximum-token-id uint u1000000)
 
 ;; Read-Only Functions
 (define-read-only (get-auction (auction-id uint))
@@ -58,14 +62,30 @@
     )
 )
 
+;; Private Helper Functions
+(define-private (validate-token-id (token-id uint))
+    (and 
+        (> token-id u0)
+        (<= token-id (var-get maximum-token-id))
+    )
+)
+
+(define-private (validate-reserve-price (reserve-price uint))
+    (>= reserve-price (var-get minimum-reserve))
+)
+
 ;; Public Functions
 (define-public (create-auction (token-id uint) (start-block uint) (end-block uint) (reserve-price uint) (is-nft bool))
     (let (
         (auction-id (+ (var-get last-auction-id) u1))
     )
+        ;; Validate input parameters
+        (asserts! (validate-token-id token-id) ERR-INVALID-TOKEN)
+        (asserts! (validate-reserve-price reserve-price) ERR-INVALID-RESERVE)
         (asserts! (> end-block start-block) ERR-NOT-AUTHORIZED)
         (asserts! (>= start-block block-height) ERR-NOT-AUTHORIZED)
-        
+
+        ;; Create new auction with validated inputs
         (map-set auctions
             { auction-id: auction-id }
             {
